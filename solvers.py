@@ -41,9 +41,9 @@ class IHS(LeastSquares):
 
 
 	def _compute_direction(self, SA, x):
-		g = np.dot(self.A.T, np.dot(self.A, x) - self.b)
-		HS = np.dot(SA.T, SA)
-		dx = - np.dot(np.linalg.pinv(HS), g)
+		g = self.A.T @ (A @ x - self.b)
+		HS = SA.T @ SA
+		dx = - np.linalg.pinv(HS) @ g
 		return dx
 
 
@@ -52,21 +52,31 @@ class IHS(LeastSquares):
 
 
 	def solve(self, sketch_size, sketch='srht', n_iterations=50, freq_update=1):
+		
 		self.compute_params(sketch, sketch_size)
+		
 		x = np.zeros((self.d,))
-		errors = [self.compute_error(x)]
-		th_errors = [1.]
+		errs = np.zeros((n_iterations,), dtype=np.float64)
+		th_errs = np.zeros((n_iterations,), dtype=np.float64)
+		errs[0] = self.compute_error(x)
+		th_errs[0] = 1.
+		
 		for iter_ in range(n_iterations):
+			
 			if iter_ % freq_update == 0:
 				SA = self._sketch(sketch, sketch_size)
+			
 			dx = self._compute_direction(SA, x)
+			
 			if iter_ % freq_update == 0:
 				x = self._update(x, self.step_size_fresh*dx)
 			else:
 				x = self._update(x, self.step_size_fixed*dx)
-			errors.append(self.compute_error(x))
-			th_errors.append(self.cv_rate**(iter_+1))
-		return x, np.array(th_errors), np.array(errors) / errors[0]
+			
+			errors[iter_+1] = self.compute_error(x)
+			th_errors[iter_+1] = self.cv_rate**(iter_+1)
+		
+		return x, th_errors, errors / errors[0]
 
 
 
@@ -80,36 +90,45 @@ class pCG(LeastSquares):
 
 
 	def _init_pcg(self, *argv):
+		
 		if self.sketch == 'srht':
 			E = srht(np.hstack([self.A, self.b.reshape((-1,1))]), self.m)
 		elif self.sketch == 'gaussian':
 			E = 1./np.sqrt(self.m) * np.dot(np.random.randn(self.m, self.n), np.hstack([self.A, self.b.reshape((-1,1))]))
 		else:
 			raise NotImplementedError
+
 		z = E[::,-1].squeeze()
 		E = E[::,:-1]
+
 		Q, R, pi = qr(E, pivoting=True, mode='economic')
+		
 		Pi = np.zeros((pi.shape[0], pi.shape[0]))
 		Pi[range(pi.shape[0]), pi] = 1
-		z = np.dot(Pi.T, solve_triangular(R, np.dot(Q.T, z)))
+		
+		z = Pi.T @ solve_triangular(R, Q.T @ z)
 		y = np.copy(z)
-		Atb = solve_triangular(R.T, np.dot(Pi, np.dot(self.A.T, self.b)), lower=True)
-		AtAy = np.dot(Pi.T, solve_triangular(R, y))
+		
+		Atb = solve_triangular(R.T, Pi @ (self.A.T @ self.b), lower=True)
+		AtAy = Pi.T @ solve_triangular(R, y)
 		AtAy = solve_triangular(R.T, np.dot(Pi, np.dot(self.A.T, np.dot(self.A, AtAy))), lower=True)
+		
 		r, p = Atb - AtAy, Atb - AtAy
-		x = np.dot(Pi.T, solve_triangular(R, y))
+		
+		x = Pi.T solve_triangular(R, y)
+		
 		return x, y, r, p, R, Pi
 
 
 	def _pcg_iteration(self, *argv):
 		R, Pi, x, y, r, p = argv[:6]
-		Ap = np.dot(Pi.T, solve_triangular(R, p))
-		Ap = solve_triangular(R.T, np.dot(Pi, np.dot(self.A.T, np.dot(self.A, Ap))), lower=True)
-		rtr = np.linalg.norm(r)**2
-		alpha = np.float(rtr / np.sum(p*Ap))
+		Ap = Pi.T @ solve_triangular(R, p)
+		Ap = solve_triangular(R.T, (Pi @ (self.A.T @ (self.A @ Ap))), lower=True)
+		rtr = np.sum(r * r)
+		alpha = np.float(rtr / np.sum(p * Ap))
 		y = y + alpha * p 
 		r = r - alpha * Ap 
-		beta = np.linalg.norm(r)**2 / rtr 
+		beta = np.sum(r * r) / rtr 
 		p = r + beta * p
 		x = np.dot(Pi.T, solve_triangular(R, y))	
 		return x, y, r, p 
@@ -125,9 +144,6 @@ class pCG(LeastSquares):
 		return x, np.array(errors)/errors[0]
 
 
-
-
-
 class CG(LeastSquares):
 
 	def __init__(self, A, b, mode='solver'):
@@ -137,29 +153,30 @@ class CG(LeastSquares):
 
 	def _init_cg(self):
 		x = np.zeros((self.d,))
-		Atb = self.A.T.dot(self.b)
+		Atb = self.A.T @ self.b
 		r, p = Atb.copy(), Atb.copy()
 		return x, r, p 
 
 
 	def _cg_iteration(self, *argv):
 		x, r, p = argv[:3]
-		Ap = np.dot(self.A.T, np.dot(self.A,p))
-		alpha = np.sum(r**2) / np.sum(p*Ap)
-		x = x + alpha*p
-		_r = r - alpha*Ap 
-		beta = np.sum(_r**2) / np.sum(r**2)
+		Ap = self.A.T @ np.dot(self.A,p)
+		alpha = np.sum(r ** 2) / np.sum(p * Ap)
+		x = x + alpha * p
+		_r = r - alpha * Ap 
+		beta = np.sum(_r ** 2) / np.sum(r ** 2)
 		r = np.copy(_r)
-		p =  r + beta*p 	
+		p =  r + beta * p 	
 		return x, r, p	
 
 
 	def solve(self, n_iterations=50):
 		x, r, p = self._init_cg()
-		errors = [self.compute_error(x)]
+		errors = np.zeros((n_iterations,), dtype=n_iterations)
+		errors[0] = self.compute_error(x)
 		for iteration in range(n_iterations):
 			x, r, p = self._cg_iteration(x, r, p)
-			errors.append(self.compute_error(x))
+			errors[iteration] = self.compute_error(x)
 		return x, np.array(errors)/errors[0]
 
 

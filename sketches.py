@@ -41,7 +41,7 @@ def haar(matrix, sketch_size):
     n = matrix.shape[0]
     A = 1./np.sqrt(n)*np.random.randn(n, sketch_size)
     S = qr(A, mode='reduced')[0].T
-    return np.dot(S, matrix)
+    return S @ matrix
 
 
 def gaussian(matrix, sketch_size):
@@ -49,7 +49,7 @@ def gaussian(matrix, sketch_size):
         matrix = matrix.reshape((-1,1))
     n = matrix.shape[0]
     S = 1./np.sqrt(sketch_size)*np.random.randn(sketch_size, n)
-    return np.dot(S, matrix)
+    return S @ matrix
 
 
 
